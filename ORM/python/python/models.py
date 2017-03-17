@@ -38,3 +38,6 @@ class User(Entity):
 
 
 if __name__ == "__main__":
+    section = Section(3)
+    for x in section.categories:
+        print(x.title)

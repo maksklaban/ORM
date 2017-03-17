@@ -37,8 +37,8 @@ class Entity(object):
         self.__cursor = self.__class__.db.cursor(
             cursor_factory=psycopg2.extras.DictCursor
             )
-        self.__fields   = {}
         self.__id       = id
+        self.__fields   = {}
         self.__loaded   = False
         self.__modified = False
         self.__table    = self.__class__.__name__.lower()
@@ -56,10 +56,14 @@ class Entity(object):
 
         self.__load()
 
-        result = self._get_column(name)
+        if name in self._columns:
+            return self._get_column(name)
+        elif name in self._parents:
+            return self._get_parent(name.capitalize())
+        elif name in self._children:
+            return self._get_children(self._children[name])
 
-        return result
-
+        return self._get_column(name)
 
     def __setattr__(self, name, value):
         # check, if requested property name is in current class
@@ -129,27 +133,68 @@ class Entity(object):
         else:
             values.append(self.__id)
 
-        temp_dict = {
-                    'table' : self.__table,
-                    'columns' : keys.lstrip(', '),
-                    }
-        sql_update = Entity.__update_query.format(**temp_dict)
+        sql_update = Entity.__update_query.format(
+                table=self.__table,
+                columns=keys.lstrip(', '),
+            )
 
         self.__execute_query(sql_update, (values))
 
     def _get_children(self, name):
         # return an array of child entity instances
         # each child instance must have an id and be filled with data
-        pass
+
+        child_class = type(
+                            name, 
+                            (Entity,), 
+                            {
+                                '_columns': [],
+                                '_parents': [],
+                                '_children': {},
+                                '_siblings': {},
+                            },
+                        )
+        sql_child = self.__parent_query.format(
+                                        table=name.lower(),
+                                        parent=self.__table,
+                                    )
+
+        self.__execute_query(sql_child, (self.__id,))
+
+        for inst in self.__cursor.fetchall():
+            child_inst = child_class(inst['{}_id'.format(self.__table)])
+            child_inst.__fields = dict(inst)
+            child_inst.__loaded = True
+
+            yield child_inst
+        # for x in child_class.all():
+        #     if x.__fields['{}_id'.format(self.__table)] == self.__id:
+        #         yield x
 
     def _get_column(self, name):
+        # return value from fields array by <table>_<name> as a key
+
         return self.__fields['{}_{}'.format(self.__table, name)]
 
     def _get_parent(self, name):
         # ORM part 2
         # get parent id from fields with <name>_id as a key
         # return an instance of parent entity class with an appropriate id
-        pass
+
+        parent_id = self.__fields['{}_id'.format(name)]
+        parent_class = type(
+                                name, 
+                                (Entity,), 
+                                {
+                                '_columns': [],
+                                '_parents': [],
+                                '_children': {},
+                                '_siblings': {},
+                                },
+                            )
+
+        return parent_class(parent_id)
+
 
     def _get_siblings(self, name):
         # ORM part 2
@@ -159,6 +204,8 @@ class Entity(object):
         pass
 
     def _set_column(self, name, value):
+        # put new value into fields array with <table>_<name> as a key
+
         self.__fields['{}_{}'.format(self.__table, name)] = value
 
     def _set_parent(self, name, value):
@@ -182,7 +229,7 @@ class Entity(object):
 
         for x in buff_instance.__cursor.fetchall():
             temp = cls()
-            temp.__fields = x
+            temp.__fields = dict(x)
             temp.__id = temp._get_column('id')
             temp.__loaded = True
             yield temp
