@@ -59,11 +59,11 @@ class Entity(object):
         if name in self._columns:
             return self._get_column(name)
         elif name in self._parents:
-            return self._get_parent(name.capitalize())
+            return self._get_parent(name)
         elif name in self._children:
-            return self._get_children(self._children[name])
-
-        return self._get_column(name)
+            return self._get_children(name)
+        elif name in self._siblings:
+            return self._get_siblings(name)
 
     def __setattr__(self, name, value):
         # check, if requested property name is in current class
@@ -73,9 +73,11 @@ class Entity(object):
         if name in self._columns:
             self._set_column(name, value)
             self.__modified = True
+        elif name in self._parents:
+            self._set_parent(name, value)
+            self.__modified = True
 
         super(Entity, self).__setattr__(name, value)
-
 
     def __execute_query(self, query, args):
         # execute an sql statement and handle exceptions together with transactions
@@ -92,14 +94,13 @@ class Entity(object):
         # save an insert id
 
         keys = ', '.join(self.__fields.keys())
-        values = ('%s, ' * len(self.__fields.values())).rstrip(', ')
+        values = ', '.join(['%s'] * len(self.__fields.values()))
 
-        temp_dict = {
-                    'table' : self.__table,
-                    'columns' : keys,
-                    'placeholders' : values,
-                    }
-        sql_insert = Entity.__insert_query.format(**temp_dict)
+        sql_insert = Entity.__insert_query.format(
+                                            table=self.__table,
+                                            columns=keys,
+                                            placeholders=values,
+                                        )
 
         self.__execute_query(sql_insert, (list(self.__fields.values())))
         self.__id = self.__cursor.fetchone()[0]
@@ -125,51 +126,48 @@ class Entity(object):
         # use prepared statements
 
         values = []
-        keys = ''
+        keys = []
 
         for x, y in self.__fields.items():
-            keys = ('{}, {}=%s').format(keys, x)
+            keys.append('{}=%s'.format(x))
             values.append(y)
         else:
             values.append(self.__id)
 
         sql_update = Entity.__update_query.format(
                 table=self.__table,
-                columns=keys.lstrip(', '),
+                columns=', '.join(keys),
             )
 
-        self.__execute_query(sql_update, (values))
+        self.__execute_query(sql_update, values)
+
+    def __get_generator(self, klass, statement):
+        self.__execute_query(statement, (self.__id,))
+
+        for inst in self.__cursor.fetchall():
+            temp_inst = klass()
+            temp_inst.__fields = dict(inst)
+            temp_inst.__loaded = True
+            temp_inst.__id = '{}_id'.format(temp_inst.__table)
+
+            yield temp_inst
 
     def _get_children(self, name):
         # return an array of child entity instances
         # each child instance must have an id and be filled with data
+        import models
 
-        child_class = type(
-                            name, 
-                            (Entity,), 
-                            {
-                                '_columns': [],
-                                '_parents': [],
-                                '_children': {},
-                                '_siblings': {},
-                            },
-                        )
+        child_name = self._children[name]
+        child_class = getattr(models, child_name)
         sql_child = self.__parent_query.format(
-                                        table=name.lower(),
+                                        table=child_name.lower(),
                                         parent=self.__table,
                                     )
 
-        self.__execute_query(sql_child, (self.__id,))
-
-        for inst in self.__cursor.fetchall():
-            child_inst = child_class(inst['{}_id'.format(self.__table)])
-            child_inst.__fields = dict(inst)
-            child_inst.__loaded = True
-
-            yield child_inst
-        # for x in child_class.all():
-        #     if x.__fields['{}_id'.format(self.__table)] == self.__id:
-        #         yield x
+        return self.__get_generator(
+                                child_class, 
+                                sql_child,
+                                )
 
     def _get_column(self, name):
         # return value from fields array by <table>_<name> as a key
@@ -180,18 +178,10 @@ class Entity(object):
         # ORM part 2
         # get parent id from fields with <name>_id as a key
         # return an instance of parent entity class with an appropriate id
+        import models
 
         parent_id = self.__fields['{}_id'.format(name)]
-        parent_class = type(
-                                name, 
-                                (Entity,), 
-                                {
-                                '_columns': [],
-                                '_parents': [],
-                                '_children': {},
-                                '_siblings': {},
-                                },
-                            )
+        parent_class = getattr(models, name.capitalize())
 
         return parent_class(parent_id)
 
@@ -201,7 +191,23 @@ class Entity(object):
         # get parent id from fields with <name>_id as a key
         # return an array of sibling entity instances
         # each sibling instance must have an id and be filled with data
-        pass
+        import models
+
+        sibling_name = self._siblings[name]
+        lower_sib_name = sibling_name.lower()
+        sibling_class = getattr(models, sibling_name)
+
+        join_table = '__'.join(sorted((lower_sib_name, self.__table)))
+        sql_sibiling = self.__sibling_query.format(
+                                        sibling=lower_sib_name,
+                                        join_table=join_table,
+                                        table=self.__table,
+                                    )
+
+        return self.__get_generator(
+                                    sibling_class,
+                                    sql_sibiling,
+                                )
 
     def _set_column(self, name, value):
         # put new value into fields array with <table>_<name> as a key
@@ -212,7 +218,11 @@ class Entity(object):
         # ORM part 2
         # put new value into fields array with <name>_id as a key
         # value can be a number or an instance of Entity subclass
-        pass
+
+        if isinstance(value, Entity):
+            self.__fields['{}_id'.format(name)] = value.id
+        else:
+            self.__fields['{}_id'.format(name)] = value
 
     @classmethod
     def all(cls):
@@ -222,17 +232,10 @@ class Entity(object):
         # return an array of istances
         
         buff_instance = cls()
+        sql_all = buff_instance.__list_query.format(table=buff_instance.__table)
 
-        buff_instance.__execute_query(
-                Entity.__list_query.format(table=buff_instance.__table), None
-            )
+        return buff_instance.__get_generator(cls, sql_all)
 
-        for x in buff_instance.__cursor.fetchall():
-            temp = cls()
-            temp.__fields = dict(x)
-            temp.__id = temp._get_column('id')
-            temp.__loaded = True
-            yield temp
 
     def delete(self):
         # execute delete query with appropriate id

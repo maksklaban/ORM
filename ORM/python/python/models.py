@@ -38,6 +38,13 @@ class User(Entity):
 
 
 if __name__ == "__main__":
-    section = Section(3)
-    for x in section.categories:
-        print(x.title)
+    for x in User.all():
+        print(x.name)
+    # post = Post(4)
+    # for x in post.tags:
+    #     print(x.name)
+
+    # category = Category(4)
+    # print(category.section.title)
+    # for x in category.posts:
+    #     print(x.content)
